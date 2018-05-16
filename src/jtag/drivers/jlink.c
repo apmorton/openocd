@@ -54,6 +54,8 @@ static enum jaylink_usb_address usb_address;
 static bool use_usb_address;
 static enum jaylink_target_interface iface = JAYLINK_TIF_JTAG;
 static bool trace_enabled;
+static bool use_ip_address;
+static char *jlink_ip_address;
 
 #define JLINK_MAX_SPEED			12000
 #define JLINK_TAP_BUFFER_SIZE	2048
@@ -573,18 +575,29 @@ static int jlink_init(void)
 		return ERROR_JTAG_INIT_FAILED;
 	}
 
-	host_interfaces = JAYLINK_HIF_USB;
+	if (use_ip_address) {
+		ret = jaylink_discovery_probe(jayctx, jlink_ip_address);
 
-	if (use_serial_number)
-		host_interfaces |= JAYLINK_HIF_TCP;
+		if (ret != JAYLINK_OK) {
+			LOG_ERROR("jaylink_discovery_probe() failed: %s.",
+				jaylink_strerror(ret));
+			jaylink_exit(jayctx);
+			return ERROR_JTAG_INIT_FAILED;
+		}
+	} else {
+		host_interfaces = JAYLINK_HIF_USB;
 
-	ret = jaylink_discovery_scan(jayctx, host_interfaces);
+		if (use_serial_number)
+			host_interfaces |= JAYLINK_HIF_TCP;
 
-	if (ret != JAYLINK_OK) {
-		LOG_ERROR("jaylink_discovery_scan() failed: %s.",
-			jaylink_strerror(ret));
-		jaylink_exit(jayctx);
-		return ERROR_JTAG_INIT_FAILED;
+		ret = jaylink_discovery_scan(jayctx, host_interfaces);
+
+		if (ret != JAYLINK_OK) {
+			LOG_ERROR("jaylink_discovery_scan() failed: %s.",
+				jaylink_strerror(ret));
+			jaylink_exit(jayctx);
+			return ERROR_JTAG_INIT_FAILED;
+		}
 	}
 
 	ret = jaylink_get_devices(jayctx, &devs, &num_devices);
@@ -595,7 +608,7 @@ static int jlink_init(void)
 		return ERROR_JTAG_INIT_FAILED;
 	}
 
-	if (!use_serial_number && !use_usb_address && num_devices > 1) {
+	if (!use_serial_number && !use_usb_address && !use_ip_address && num_devices > 1) {
 		LOG_ERROR("Multiple devices found, specify the desired device.");
 		jaylink_free_devices(devs, true);
 		jaylink_exit(jayctx);
@@ -634,6 +647,11 @@ static int jlink_init(void)
 			if (usb_address != address)
 				continue;
 		}
+
+		/*
+		 * use_ip_address check purposely omitted
+		 * when probing by ip we should only ever end up with a single device
+		 */
 
 		ret = jaylink_open(devs[i], &devh);
 
@@ -941,6 +959,7 @@ COMMAND_HANDLER(jlink_usb_command)
 
 	use_serial_number = false;
 	use_usb_address = true;
+	use_ip_address = false;
 
 	return ERROR_OK;
 }
@@ -967,6 +986,26 @@ COMMAND_HANDLER(jlink_serial_command)
 
 	use_serial_number = true;
 	use_usb_address = false;
+	use_ip_address = false;
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(jlink_ip_command)
+{
+	if (CMD_ARGC != 1) {
+		command_print(CMD_CTX, "Need exactly one argument for jlink ip.");
+		return ERROR_COMMAND_SYNTAX_ERROR;
+	}
+
+	if (jlink_ip_address)
+		free(jlink_ip_address);
+
+	jlink_ip_address = strdup(CMD_ARGV[0]);
+
+	use_serial_number = false;
+	use_usb_address = false;
+	use_ip_address = true;
 
 	return ERROR_OK;
 }
@@ -1841,6 +1880,13 @@ static const struct command_registration jlink_subcommand_handlers[] = {
 		.mode = COMMAND_CONFIG,
 		.help = "set the serial number of the device that should be used",
 		.usage = "<serial number>"
+	},
+	{
+		.name = "ip",
+		.handler = &jlink_ip_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the ip address of the device that should be used",
+		.usage = "<ip address>"
 	},
 	{
 		.name = "config",
